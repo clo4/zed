@@ -379,7 +379,8 @@ fn initiate_sign_in(cx: &mut WindowContext) {
             copilot.update(cx, |this, cx| this.sign_in(cx)).detach();
             workspace
                 .update(cx, |this, cx| {
-                    this.toggle_modal(cx, |cx| CopilotCodeVerification::new(&copilot, cx));
+                    let fs = this.app_state().fs.clone();
+                    this.toggle_modal(cx, |cx| CopilotCodeVerification::new(&copilot, fs, cx));
                 })
                 .ok();
         }

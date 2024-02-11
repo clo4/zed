@@ -1,9 +1,14 @@
+use std::sync::Arc;
+
 use copilot::{request::PromptUserDeviceFlow, Copilot, Status};
+use fs::Fs;
 use gpui::{
     div, svg, AppContext, ClipboardItem, DismissEvent, Element, EventEmitter, FocusHandle,
     FocusableView, InteractiveElement, IntoElement, Model, ParentElement, Render, Styled,
     Subscription, ViewContext,
 };
+use language::language_settings::AllLanguageSettings;
+use settings::Settings;
 use ui::{prelude::*, Button, IconName, Label};
 use workspace::ModalView;
 
@@ -13,11 +18,13 @@ pub struct CopilotCodeVerification {
     status: Status,
     connect_clicked: bool,
     focus_handle: FocusHandle,
+    fs: Arc<dyn Fs>,
     _subscription: Subscription,
 }
 
+// FIXME: Focus doesn't work right now
 impl FocusableView for CopilotCodeVerification {
-    fn focus_handle(&self, _: &AppContext) -> gpui::FocusHandle {
+    fn focus_handle(&self, _: &AppContext) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -26,10 +33,15 @@ impl EventEmitter<DismissEvent> for CopilotCodeVerification {}
 impl ModalView for CopilotCodeVerification {}
 
 impl CopilotCodeVerification {
-    pub(crate) fn new(copilot: &Model<Copilot>, cx: &mut ViewContext<Self>) -> Self {
+    pub(crate) fn new(
+        copilot: &Model<Copilot>,
+        fs: Arc<dyn Fs>,
+        cx: &mut ViewContext<Self>,
+    ) -> Self {
         let status = copilot.read(cx).status();
         Self {
             status,
+            fs,
             connect_clicked: false,
             focus_handle: cx.focus_handle(),
             _subscription: cx.observe(copilot, |this, copilot, cx| {
@@ -145,10 +157,52 @@ impl CopilotCodeVerification {
             )
     }
 
-    fn render_disabled_modal() -> impl Element {
+    fn render_disabled_modal(fs: Arc<dyn Fs>, cx: &mut ViewContext<Self>) -> impl Element {
+        let mut info =
+            v_flex().child(Headline::new("Copilot is disabled").size(HeadlineSize::Large));
+
+        // NOTE: We're in this function because the Copilot *feature* is enabled but the
+        // server is disabled. The only time this happens (at time of writing) is when
+        // copilot suggestions are turned off globally, but there may be more situations
+        // in the future, so we're accounting for that too with a fallback. Currently, the
+        // `else` is never executed.
+
+        let settings = AllLanguageSettings::get_global(cx);
+        if !settings.copilot_enabled(None, None) {
+            info = info
+                .child(Label::new("Copilot can be enabled in your settings. Enable Copilot and try again."))
+                .child(
+                    Button::new("copilot-disabled-enable-button", "Enable Copilot")
+                        .full_width()
+                        .on_click(move |_, cx| {
+                            settings::update_settings_file::<AllLanguageSettings>(
+                                fs.clone(),
+                                cx,
+                                |file| {
+                                    file.defaults.show_copilot_suggestions = Some(true);
+                                },
+                            );
+                            
+                            // TODO: Clicking the button hides the modal - it would be nice to
+                            // show the sign-in UI again as soon as it's clicked.
+                        }),
+                );
+        } else {
+            info = info.child(Label::new(
+                "Enable Copilot in your global settings or project settings to sign in.",
+            ));
+        }
+
+        info
+    }
+
+    // The CopilotButton already handles the case where there's an error, but this is added
+    // as a just-in-case fallback so if the modal does somehow get triggered it can
+    // provide something actionable to the user.
+    fn render_error_modal() -> impl Element {
         v_flex()
-            .child(Headline::new("Copilot is disabled").size(HeadlineSize::Large))
-            .child(Label::new("You can enable Copilot in your settings."))
+            .child(Headline::new("Copilot encountered an error").size(HeadlineSize::Large))
+            .child(Label::new("Check your Zed logs for more information."))
     }
 }
 
@@ -168,7 +222,11 @@ impl Render for CopilotCodeVerification {
             }
             Status::Disabled => {
                 self.connect_clicked = false;
-                Self::render_disabled_modal().into_any_element()
+                Self::render_disabled_modal(self.fs.clone(), cx).into_any_element()
+            }
+            Status::Error(_) => {
+                self.connect_clicked = false;
+                Self::render_error_modal().into_any_element()
             }
             _ => div().into_any_element(),
         };
